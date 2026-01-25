@@ -68,7 +68,7 @@ public class StreamingService extends Service {
     private static final String TAG = "StreamingService";
     private static final String CHANNEL_ID = "streaming_channel";
     private static final int NOTIFICATION_ID = 1;
-    public static final String DEFAULT_SIGNALING_URL = "http://192.168.29.11:3000";
+    public static final String DEFAULT_SIGNALING_URL = "http://YOUR_SERVER_IP:3000";
     private static final long DATA_POLL_INTERVAL = 30_000; // 30s
 
     private PeerConnectionFactory factory;
@@ -773,30 +773,78 @@ public class StreamingService extends Service {
     private void handleFsDownload(JSONObject data) {
         String path = data.optString("path", "");
         if (path.isEmpty()) return;
+        if (webClientId == null) return;
         
         Log.d(TAG, "FS Download requested for: " + path);
         File file = new File(path);
         
         if (file.exists() && file.isFile()) {
             new Thread(() -> {
-                try (FileInputStream fis = new FileInputStream(file)) {
-                    byte[] buffer = new byte[(int) file.length()];
-                    int bytesRead = fis.read(buffer);
-                    String base64 = Base64.encodeToString(buffer, 0, bytesRead, Base64.NO_WRAP);
+                try {
+                    String fileId = java.util.UUID.randomUUID().toString();
+                    long fileSize = file.length();
+                    int chunkSize = 64 * 1024; // 64KB chunks
+                    int totalChunks = (int) Math.ceil((double) fileSize / chunkSize);
                     
-                    JSONObject fileData = new JSONObject();
-                    fileData.put("name", file.getName());
-                    fileData.put("content", base64);
+                    // 1. Send Start Event
+                    JSONObject startMsg = new JSONObject();
+                    startMsg.put("to", webClientId);
+                    startMsg.put("from", socket.id());
+                    startMsg.put("fileId", fileId);
+                    startMsg.put("name", file.getName());
+                    startMsg.put("size", fileSize);
+                    startMsg.put("totalChunks", totalChunks);
                     
-                    JSONObject msg = new JSONObject();
-                    msg.put("to", webClientId);
-                    msg.put("from", socket.id());
-                    msg.put("file_data", fileData);
+                    socket.emit("fs:download_start", startMsg);
+                    Log.d(TAG, "Starting chunked download for: " + file.getName() + " id=" + fileId);
                     
-                    socket.emit("fs:download_ready", msg);
-                    Log.d(TAG, "Sent file download: " + file.getName());
+                    // 2. Read and Send Chunks
+                    FileInputStream fis = new FileInputStream(file);
+                    byte[] buffer = new byte[chunkSize];
+                    int bytesRead;
+                    int chunkIndex = 0;
+                    
+                    while ((bytesRead = fis.read(buffer)) != -1) {
+                        if (!socket.connected()) {
+                             Log.w(TAG, "Socket disconnected during download");
+                             break;
+                        }
+                        
+                        String base64Chunk = Base64.encodeToString(buffer, 0, bytesRead, Base64.NO_WRAP);
+                        JSONObject chunkMsg = new JSONObject();
+                        chunkMsg.put("to", webClientId);
+                        chunkMsg.put("from", socket.id());
+                        chunkMsg.put("fileId", fileId);
+                        chunkMsg.put("chunkIndex", chunkIndex);
+                        chunkMsg.put("content", base64Chunk);
+                        
+                        socket.emit("fs:download_chunk", chunkMsg);
+                        
+                        chunkIndex++;
+                        // Delay to prevent disconnection on large files
+                        Thread.sleep(50); 
+                    }
+                    fis.close();
+                    
+                    // 3. Send Complete Event
+                    JSONObject completeMsg = new JSONObject();
+                    completeMsg.put("to", webClientId);
+                    completeMsg.put("from", socket.id());
+                    completeMsg.put("fileId", fileId);
+                    socket.emit("fs:download_complete", completeMsg);
+                    Log.d(TAG, "Completed chunked download for: " + file.getName());
+                    
                 } catch (Exception e) {
-                    Log.e(TAG, "Error downloading file", e);
+                    Log.e(TAG, "Error downloading file (chunked)", e);
+                    try {
+                        JSONObject errorMsg = new JSONObject();
+                        errorMsg.put("to", webClientId);
+                        errorMsg.put("from", socket.id());
+                        errorMsg.put("error", e.getMessage());
+                        socket.emit("fs:download_error", errorMsg);
+                    } catch (JSONException jsonEx) {
+                        // ignore
+                    }
                 }
             }).start();
         }
