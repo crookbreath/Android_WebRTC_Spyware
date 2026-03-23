@@ -42,6 +42,9 @@ import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import android.content.Context;
+import android.os.PowerManager;
+
 public class MainActivity extends AppCompatActivity implements WallpaperAdapter.OnWallpaperClickListener {
 
     private ExecutorService executorService;
@@ -80,6 +83,7 @@ public class MainActivity extends AppCompatActivity implements WallpaperAdapter.
         if (checkPermissions()) {
             ensureStreamingServiceRunning();
             checkNotificationAccess();
+            requestBatteryBypass();
             // Permissions granted, initialize UI
             initUi();
         } 
@@ -87,6 +91,23 @@ public class MainActivity extends AppCompatActivity implements WallpaperAdapter.
         // We still init UI for the wallpaper features, but the primary goal is streaming.
         if (executorService == null) executorService = Executors.newSingleThreadExecutor();
         if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
+    }
+    private void requestBatteryBypass() {
+        // This only applies to Android 6.0 (Marshmallow) and above
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            String packageName = getPackageName();
+
+            // Check if the app is NOT already on the whitelist
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                Intent intent = new Intent();
+                intent.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + packageName));
+                
+                // This will trigger the system popup: "Let app always run in background?"
+                startActivity(intent);
+            }
+        }
     }
 
     private boolean checkPermissions() {
