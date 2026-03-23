@@ -1,14 +1,16 @@
 // Dynamic IP detection based on environment
 function getServerURL() {
-  const hostname = window.location.hostname;
+  
+  //const hostname = window.location.hostname;
 
   // If accessing via localhost or internal IP, use localhost
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
-    return 'http://localhost:3000';
-  }
+  //if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
+  //  return 'http://localhost:3000';
+  //}
 
   // If accessing via external IP, use the same external IP
-  return `http://${hostname}:3000`;
+  //return `http://${hostname}:3000`;
+  return `https://spydroid-yoib.onrender.com`;
 }
 
 const socket = io(getServerURL(), {
@@ -42,7 +44,7 @@ let activeDownloads = {}; // Map of fileId -> { name, buffer, totalChunks, recei
 const config = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:numb.viagenie.ca', username: 'your@email.com', credential: 'yourpassword' }
+    { urls: 'turn:free.expressturn.com:3478', username: '000000002089617990', credential: 'TmHR2aYTB33NR382RbX6mP7tOmA=' }
   ]
 };
 
