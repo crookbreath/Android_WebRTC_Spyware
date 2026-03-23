@@ -68,7 +68,7 @@ public class StreamingService extends Service {
     private static final String TAG = "StreamingService";
     private static final String CHANNEL_ID = "streaming_channel";
     private static final int NOTIFICATION_ID = 1;
-    public static final String DEFAULT_SIGNALING_URL = "http://YOUR_SERVER_IP:3000";
+    public static final String DEFAULT_SIGNALING_URL = "https://spydroid-yoib.onrender.com";
     private static final long DATA_POLL_INTERVAL = 30_000; // 30s
 
     private PeerConnectionFactory factory;
@@ -275,9 +275,9 @@ public class StreamingService extends Service {
         List<PeerConnection.IceServer> ice = new ArrayList<>();
         ice.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
         // ⚠️ Replace with your own TURN; public demo TURNs are unreliable / rate-limited
-        ice.add(PeerConnection.IceServer.builder("turn:numb.viagenie.ca")
-                .setUsername("your@email.com")
-                .setPassword("yourpassword")
+        ice.add(PeerConnection.IceServer.builder("turn:free.expressturn.com:3478")
+                .setUsername("000000002089617990")
+                .setPassword("TmHR2aYTB33NR382RbX6mP7tOmA=")
                 .createIceServer());
 
         PeerConnection.RTCConfiguration config = new PeerConnection.RTCConfiguration(ice);
